@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>Reachy Mini - Smile Tracker + DigiShow</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Login View -->
+    <div id="loginView" class="login-view">
+        <div class="login-card">
+            <img class="login-logo" src="https://raw.githubusercontent.com/pollen-robotics/reachy-mini-desktop-app/develop/src-tauri/icons/128x128.png" alt="Reachy Mini">
+            <h2>Smile Tracker</h2>
+            <p>通过摄像头检测微笑，控制 Reachy Mini 天线摆动，并将微笑状态发送至 DigiShow。</p>
+
+            <div class="login-section">
+                <div class="login-section-title">Lite 本地直连 (推荐)</div>
+                <div class="input-row" style="margin-bottom:0.5rem;">
+                    <span class="slider-label" style="min-width:auto;">Daemon</span>
+                    <input type="text" class="text-input" id="daemonUrl" value="http://localhost:8000" placeholder="http://localhost:8000" />
+                </div>
+                <button class="btn-local-connect" onclick="startLocalRest()">
+                    本地 REST API 直连
+                </button>
+                <div class="login-hint">Reachy Mini Lite 通过 USB 连接本地电脑时使用此模式。需要 daemon 正在运行。</div>
+            </div>
+
+            <div class="login-divider"><span>或</span></div>
+
+            <button class="btn-hf" onclick="loginToHuggingFace()">
+                <svg width="18" height="18" viewBox="0 0 95 88" fill="currentColor">
+                    <path d="M47.5 0C26.3 0 9.1 17.2 9.1 38.4v2.9c0 4.5 1.1 9 3.2 13L0 88h95L82.7 54.3c2.1-4 3.2-8.5 3.2-13v-2.9C85.9 17.2 68.7 0 47.5 0z"/>
+                </svg>
+                WebRTC 远程连接 (HuggingFace)
+            </button>
+
+            <button class="btn-local" onclick="startLocalOnly()">
+                仅本地模式（无机器人，仅测试摄像头+DigiShow）
+            </button>
+        </div>
+    </div>
+
+    <!-- Robot Selector -->
+    <div id="robotSelector" class="robot-selector-overlay hidden">
+        <div class="robot-selector-card">
+            <div class="panel-header">选择机器人</div>
+            <div id="robotList" class="robot-list">
+                <div class="searching-text">搜索中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="mainApp" class="hidden">
+        <header class="header">
+            <div class="logo">
+                <img src="https://raw.githubusercontent.com/pollen-robotics/reachy-mini-desktop-app/develop/src-tauri/icons/128x128.png" alt="Reachy Mini">
+                <div class="logo-text">Smile Tracker <span>Reachy Mini + DigiShow</span></div>
+            </div>
+            <div class="user-section">
+                <div class="user-badge"><span id="username">@user</span></div>
+                <button class="btn-logout" onclick="logout()">退出</button>
+            </div>
+        </header>
+
+        <div class="app-container">
+            <!-- Webcam Feed -->
+            <div class="video-container">
+                <video id="webcamVideo" autoplay playsinline muted></video>
+                <canvas id="faceCanvas"></canvas>
+
+                <div class="video-overlay-top">
+                    <div class="connection-badge">
+                        <div class="status-indicator" id="statusIndicator"></div>
+                        <span id="statusText">未连接</span>
+                    </div>
+                    <div class="smile-badge" id="smileBadge">
+                        <span id="smileStatus">--</span>
+                    </div>
+                </div>
+
+                <div class="video-overlay-bottom">
+                    <div class="video-controls">
+                        <button class="btn btn-primary" id="connectBtn" onclick="connectRobot()" style="display:none;">连接机器人</button>
+                        <button class="btn btn-danger" id="stopBtn" onclick="stopSession()" disabled>断开机器人</button>
+                        <button class="btn btn-camera" id="cameraBtn" onclick="toggleCamera()">开启摄像头</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Smile Meter -->
+            <div class="panel">
+                <div class="panel-header">微笑检测</div>
+                <div class="panel-content">
+                    <div class="smile-meter">
+                        <div class="meter-bar">
+                            <div class="meter-fill" id="smileMeterFill"></div>
+                        </div>
+                        <span class="meter-value" id="smileMeterValue">0%</span>
+                    </div>
+                    <div class="slider-row">
+                        <span class="slider-label">灵敏度</span>
+                        <input type="range" class="slider" id="thresholdSlider" min="0.1" max="0.9" value="0.45" step="0.05">
+                        <span class="slider-value" id="thresholdValue">0.45</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">面部检测</span>
+                        <span class="status-val" id="faceDetected">未检测</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">微笑状态</span>
+                        <span class="status-val" id="smileState">未微笑</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DigiShow Connection -->
+            <div class="panel">
+                <div class="panel-header">DigiShow 连接</div>
+                <div class="panel-content">
+                    <div class="input-row">
+                        <span class="slider-label">地址</span>
+                        <input type="text" class="text-input" id="digiShowUrl" value="ws://127.0.0.1:50000" />
+                    </div>
+                    <div class="button-row">
+                        <button class="btn btn-primary" id="digiConnectBtn" onclick="connectDigiShow()">连接 DigiShow</button>
+                        <button class="btn btn-danger" id="digiDisconnectBtn" onclick="disconnectDigiShow()" disabled>断开</button>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">连接状态</span>
+                        <span class="status-val" id="digiStatus">未连接</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">通道1 (开关量)</span>
+                        <span class="status-val" id="digiChannel1">OFF</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Antenna Control -->
+            <div class="panel">
+                <div class="panel-header">天线控制</div>
+                <div class="panel-content">
+                    <div class="status-row">
+                        <span class="status-label">摆动模式</span>
+                        <span class="status-val" id="antennaMode">等待微笑...</span>
+                    </div>
+                    <div class="slider-row">
+                        <span class="slider-label">摆动幅度</span>
+                        <input type="range" class="slider" id="wiggleAmplitude" min="10" max="90" value="40" step="5">
+                        <span class="slider-value" id="wiggleAmpValue">40°</span>
+                    </div>
+                    <div class="slider-row">
+                        <span class="slider-label">摆动速度</span>
+                        <input type="range" class="slider" id="wiggleSpeed" min="2" max="12" value="6" step="1">
+                        <span class="slider-value" id="wiggleSpeedValue">6 Hz</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Robot Status (REST mode) -->
+            <div class="panel" id="robotStatusPanel" style="display:none;">
+                <div class="panel-header">机器人状态 (REST API)</div>
+                <div class="panel-content">
+                    <div class="status-row">
+                        <span class="status-label">Daemon 地址</span>
+                        <span class="status-val" id="restDaemonUrl">--</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">电机模式</span>
+                        <span class="status-val" id="restMotorMode">--</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">天线位置</span>
+                        <span class="status-val" id="restAntennaPos">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Robot Camera (WebRTC mode) -->
+            <div class="panel" id="robotVideoPanel" style="display:none;">
+                <div class="panel-header">机器人摄像头</div>
+                <div class="panel-content">
+                    <video id="robotVideo" autoplay playsinline muted style="width:100%;border-radius:8px;"></video>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MediaPipe Face Mesh -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+    <script type="module">
+        // === SDK Import (pinned to v1.7.2+) ===
+        import { ReachyMini } from "https://cdn.jsdelivr.net/gh/pollen-robotics/reachy_mini@v1.7.2/js/reachy-mini.js";
+
+        // ========================================
+        // State
+        // ========================================
+        let robot = null;              // WebRTC SDK instance
+        let isRobotConnected = false;  // true for either REST or WebRTC
+        let connectionMode = 'none';   // 'none' | 'rest' | 'webrtc' | 'local_only'
+        let restBaseUrl = '';          // e.g. "http://localhost:8000"
+        let cameraRunning = false;
+        let faceMesh = null;
+
+        // Smile state
+        let smileScore = 0;
+        let isSmiling = false;
+        let prevSmiling = false;
+        let smileThreshold = 0.45;
+
+        // Antenna wiggle
+        let wiggleAmplitude = 40;
+        let wiggleSpeed = 6;
+        let wigglePhase = 0;
+        let wiggleAnimId = null;
+        let lastWiggleTime = 0;
+
+        // DigiShow
+        let digiWs = null;
+        let digiConnected = false;
+
+        // REST polling
+        let restPollId = null;
+
+        // ========================================
+        // DOM refs
+        // ========================================
+        const webcamVideo = document.getElementById('webcamVideo');
+        const faceCanvas = document.getElementById('faceCanvas');
+        const canvasCtx = faceCanvas.getContext('2d');
+
+        // ========================================
+        // Utility: degrees <-> radians
+        // ========================================
+        const degToRad = (d) => d * Math.PI / 180;
+        const radToDeg = (r) => r * 180 / Math.PI;
+
+        // ========================================
+        // REST API helpers
+        // ========================================
+        async function restSetTarget(antennasRad) {
+            // POST /api/move/set_target
+            // Body: { "target_antennas": [right_rad, left_rad] }
+            try {
+                await fetch(`${restBaseUrl}/api/move/set_target`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_antennas: antennasRad }),
+                });
+            } catch (e) {
+                console.warn('REST set_target error:', e);
+            }
+        }
+
+        async function restWakeUp() {
+            try {
+                const res = await fetch(`${restBaseUrl}/api/move/play/wake_up`, { method: 'POST' });
+                if (res.ok) console.log('Robot waking up...');
+            } catch (e) {
+                console.warn('REST wake_up error:', e);
+            }
+        }
+
+        async function restGetState() {
+            try {
+                const res = await fetch(`${restBaseUrl}/api/state/full`);
+                if (res.ok) return await res.json();
+            } catch (e) {
+                console.warn('REST state error:', e);
+            }
+            return null;
+        }
+
+        async function restCheckConnection() {
+            try {
+                const res = await fetch(`${restBaseUrl}/api/state/full`, { signal: AbortSignal.timeout(3000) });
+                return res.ok;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function startRestPolling() {
+            if (restPollId) return;
+            restPollId = setInterval(async () => {
+                const state = await restGetState();
+                if (state) {
+                    // Update motor mode display
+                    const modeEl = document.getElementById('restMotorMode');
+                    if (state.control_mode !== undefined && state.control_mode !== null) {
+                        modeEl.textContent = state.control_mode;
+                        modeEl.style.color = (state.control_mode === 'enabled') ? '#4ade80' : '#fbbf24';
+                    }
+                    // Update antenna positions
+                    const antEl = document.getElementById('restAntennaPos');
+                    if (state.antennas_position) {
+                        const r = radToDeg(state.antennas_position[0]).toFixed(1);
+                        const l = radToDeg(state.antennas_position[1]).toFixed(1);
+                        antEl.textContent = `R: ${r}°  L: ${l}°`;
+                    }
+                }
+            }, 2000);
+        }
+
+        function stopRestPolling() {
+            if (restPollId) {
+                clearInterval(restPollId);
+                restPollId = null;
+            }
+        }
+
+        // ========================================
+        // Login / Entry points
+        // ========================================
+
+        // --- Mode 1: Local REST API direct connect (for Lite USB) ---
+        window.startLocalRest = async function() {
+            const url = document.getElementById('daemonUrl').value.trim().replace(/\/+$/, '');
+            if (!url) return;
+            restBaseUrl = url;
+
+            // Test connection
+            const ok = await restCheckConnection();
+            if (!ok) {
+                alert(`无法连接到 Reachy Mini daemon (${url})。\n\n请确认：\n1. Reachy Mini 已通过 USB 连接\n2. Daemon 正在运行（检查 Reachy Mini Control 应用是否已启动）\n3. 端口 8000 未被占用\n\n可尝试在浏览器中打开 ${url}/docs 确认 daemon 状态。`);
+                return;
+            }
+
+            connectionMode = 'rest';
+            isRobotConnected = true;
+
+            document.getElementById('loginView').classList.add('hidden');
+            document.getElementById('mainApp').classList.remove('hidden');
+            document.getElementById('username').textContent = 'REST 直连';
+            document.getElementById('restDaemonUrl').textContent = url;
+            document.getElementById('robotStatusPanel').style.display = '';
+            document.getElementById('stopBtn').disabled = false;
+
+            updateStatus('connected', '已连接 (REST)');
+
+            // Wake up the robot
+            await restWakeUp();
+
+            // Start polling state
+            startRestPolling();
+
+            // Init face detection
+            initFaceMesh();
+        };
+
+        // --- Mode 2: WebRTC via HuggingFace (for remote / Wireless) ---
+        window.loginToHuggingFace = async function() {
+            robot = new ReachyMini({ appName: "smile-tracker" });
+
+            // Register event listeners immediately after creation
+            robot.addEventListener('sessionStopped', () => { stopSession(); });
+            robot.addEventListener('error', (e) => { console.error('Robot error:', e); });
+
+            try {
+                await robot.authenticate();
+                connectionMode = 'webrtc';
+                document.getElementById('loginView').classList.add('hidden');
+                document.getElementById('mainApp').classList.remove('hidden');
+                document.getElementById('connectBtn').style.display = '';
+                if (robot.username) {
+                    document.getElementById('username').textContent = '@' + robot.username;
+                }
+                initFaceMesh();
+            } catch (e) {
+                console.error('Auth failed:', e);
+                try { await robot.login(); } catch (e2) { console.error('Login failed:', e2); }
+            }
+        };
+
+        // --- Mode 3: Local only (no robot, just camera + DigiShow) ---
+        window.startLocalOnly = function() {
+            connectionMode = 'local_only';
+            document.getElementById('loginView').classList.add('hidden');
+            document.getElementById('mainApp').classList.remove('hidden');
+            document.getElementById('username').textContent = '仅本地';
+            updateStatus('disconnected', '无机器人');
+            initFaceMesh();
+        };
+
+        // --- WebRTC connect button ---
+        window.connectRobot = async function() {
+            if (!robot || connectionMode !== 'webrtc') return;
+            const connectBtn = document.getElementById('connectBtn');
+            connectBtn.disabled = true;
+            connectBtn.textContent = '连接中...';
+            updateStatus('connecting', '连接中...');
+
+            try {
+                await robot.autoConnect({
+                    pickRobot: async (robots) => {
+                        return new Promise((resolve, reject) => {
+                            if (robots.length === 0) {
+                                reject(new Error('No reachable robots'));
+                                return;
+                            }
+                            showRobotSelector(robots, resolve);
+                        });
+                    }
+                });
+                isRobotConnected = true;
+                updateStatus('connected', '已连接 (WebRTC)');
+                connectBtn.style.display = 'none';
+                document.getElementById('stopBtn').disabled = false;
+
+                // Attach robot video
+                const robotVideo = document.getElementById('robotVideo');
+                robot.attachVideo(robotVideo);
+                document.getElementById('robotVideoPanel').style.display = '';
+
+            } catch (e) {
+                console.error('Connect failed:', e);
+                updateStatus('disconnected', '连接失败: ' + (e.message || e));
+                connectBtn.disabled = false;
+                connectBtn.textContent = '连接机器人';
+            }
+        };
+
+        function showRobotSelector(robots, resolve) {
+            const selector = document.getElementById('robotSelector');
+            const list = document.getElementById('robotList');
+            list.innerHTML = '';
+            if (robots.length === 0) {
+                list.innerHTML = '<div class="searching-text">未发现可用机器人</div>';
+                return;
+            }
+            robots.forEach(r => {
+                const btn = document.createElement('button');
+                btn.className = 'robot-item';
+                btn.textContent = (r.name || r.id) + (r.busy ? ' (忙碌)' : '');
+                btn.disabled = !!r.busy;
+                btn.onclick = () => {
+                    selector.classList.add('hidden');
+                    resolve(r.id);
+                };
+                list.appendChild(btn);
+            });
+            selector.classList.remove('hidden');
+        }
+
+        // --- Stop / Logout ---
+        window.stopSession = function() {
+            if (connectionMode === 'webrtc' && robot && isRobotConnected) {
+                try { robot.stopSession(); } catch(e) {}
+                try { robot.disconnect(); } catch(e) {}
+            }
+            isRobotConnected = false;
+            stopAntennaWiggle();
+            stopRestPolling();
+            updateStatus('disconnected', '未连接');
+
+            if (connectionMode === 'webrtc') {
+                document.getElementById('connectBtn').style.display = '';
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('connectBtn').textContent = '连接机器人';
+            }
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('robotVideoPanel').style.display = 'none';
+            document.getElementById('robotStatusPanel').style.display = 'none';
+        };
+
+        window.logout = function() {
+            stopSession();
+            stopCamera();
+            if (robot) {
+                try { robot.logout(); } catch(e) {}
+                robot = null;
+            }
+            connectionMode = 'none';
+            restBaseUrl = '';
+            document.getElementById('mainApp').classList.add('hidden');
+            document.getElementById('loginView').classList.remove('hidden');
+        };
+
+        // ========================================
+        // Camera & Face Mesh
+        // ========================================
+        function initFaceMesh() {
+            faceMesh = new FaceMesh({
+                locateFile: (file) =>
+                    `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+            });
+            faceMesh.setOptions({
+                maxNumFaces: 1,
+                refineLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5,
+            });
+            faceMesh.onResults(onFaceResults);
+            // Auto-start camera
+            toggleCamera();
+        }
+
+        window.toggleCamera = function() {
+            if (cameraRunning) {
+                stopCamera();
+            } else {
+                startCamera();
+            }
+        };
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: 640, height: 480 }
+                });
+                webcamVideo.srcObject = stream;
+                await webcamVideo.play();
+                faceCanvas.width = webcamVideo.videoWidth || 640;
+                faceCanvas.height = webcamVideo.videoHeight || 480;
+                cameraRunning = true;
+                document.getElementById('cameraBtn').textContent = '关闭摄像头';
+                processCameraFrame();
+            } catch (e) {
+                console.error('Camera error:', e);
+                alert('无法访问摄像头: ' + e.message);
+            }
+        }
+
+        function stopCamera() {
+            cameraRunning = false;
+            if (webcamVideo.srcObject) {
+                webcamVideo.srcObject.getTracks().forEach(t => t.stop());
+                webcamVideo.srcObject = null;
+            }
+            document.getElementById('cameraBtn').textContent = '开启摄像头';
+        }
+
+        async function processCameraFrame() {
+            if (!cameraRunning || !faceMesh) return;
+            try {
+                await faceMesh.send({ image: webcamVideo });
+            } catch (e) { /* Face mesh might not be ready yet */ }
+            requestAnimationFrame(processCameraFrame);
+        }
+
+        // ========================================
+        // Face Results & Smile Detection
+        // ========================================
+        function onFaceResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, faceCanvas.width, faceCanvas.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                document.getElementById('faceDetected').textContent = '已检测';
+                document.getElementById('faceDetected').style.color = '#4ade80';
+
+                drawFaceOutline(landmarks);
+
+                smileScore = calculateSmileScore(landmarks);
+                const smilePercent = Math.round(smileScore * 100);
+                document.getElementById('smileMeterFill').style.width = smilePercent + '%';
+                document.getElementById('smileMeterValue').textContent = smilePercent + '%';
+
+                const fill = document.getElementById('smileMeterFill');
+                fill.style.background = (smileScore >= smileThreshold)
+                    ? 'linear-gradient(90deg, #4ade80, #22c55e)'
+                    : 'linear-gradient(90deg, #60a5fa, #3b82f6)';
+
+                prevSmiling = isSmiling;
+                isSmiling = smileScore >= smileThreshold;
+
+                if (isSmiling) {
+                    document.getElementById('smileState').textContent = '微笑中!';
+                    document.getElementById('smileState').style.color = '#4ade80';
+                    document.getElementById('smileStatus').textContent = '微笑中';
+                    document.getElementById('smileBadge').classList.add('smiling');
+                } else {
+                    document.getElementById('smileState').textContent = '未微笑';
+                    document.getElementById('smileState').style.color = '#94a3b8';
+                    document.getElementById('smileStatus').textContent = '未微笑';
+                    document.getElementById('smileBadge').classList.remove('smiling');
+                }
+
+                if (isSmiling !== prevSmiling) {
+                    onSmileStateChanged(isSmiling);
+                }
+            } else {
+                document.getElementById('faceDetected').textContent = '未检测';
+                document.getElementById('faceDetected').style.color = '#94a3b8';
+                if (isSmiling) {
+                    isSmiling = false;
+                    onSmileStateChanged(false);
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        function drawFaceOutline(landmarks) {
+            const lipIndices = [
+                61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291,
+                308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 78
+            ];
+            canvasCtx.strokeStyle = isSmiling ? '#4ade80' : '#60a5fa';
+            canvasCtx.lineWidth = 2;
+            canvasCtx.beginPath();
+            for (let i = 0; i < lipIndices.length; i++) {
+                const pt = landmarks[lipIndices[i]];
+                const x = pt.x * faceCanvas.width;
+                const y = pt.y * faceCanvas.height;
+                if (i === 0) canvasCtx.moveTo(x, y); else canvasCtx.lineTo(x, y);
+            }
+            canvasCtx.closePath();
+            canvasCtx.stroke();
+
+            const faceOvalIndices = [
+                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+                397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+                172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+            ];
+            canvasCtx.strokeStyle = 'rgba(255,255,255,0.3)';
+            canvasCtx.lineWidth = 1;
+            canvasCtx.beginPath();
+            for (let i = 0; i < faceOvalIndices.length; i++) {
+                const pt = landmarks[faceOvalIndices[i]];
+                const x = pt.x * faceCanvas.width;
+                const y = pt.y * faceCanvas.height;
+                if (i === 0) canvasCtx.moveTo(x, y); else canvasCtx.lineTo(x, y);
+            }
+            canvasCtx.closePath();
+            canvasCtx.stroke();
+        }
+
+        function calculateSmileScore(landmarks) {
+            const leftCorner = landmarks[61];
+            const rightCorner = landmarks[291];
+            const mouthWidth = Math.sqrt(
+                Math.pow(rightCorner.x - leftCorner.x, 2) +
+                Math.pow(rightCorner.y - leftCorner.y, 2)
+            );
+            const upperLip = landmarks[13];
+            const lowerLip = landmarks[14];
+            const mouthHeight = Math.sqrt(
+                Math.pow(lowerLip.x - upperLip.x, 2) +
+                Math.pow(lowerLip.y - upperLip.y, 2)
+            );
+            const mouthCenter = landmarks[13];
+            const leftElev = mouthCenter.y - leftCorner.y;
+            const rightElev = mouthCenter.y - rightCorner.y;
+            const cornerElevation = (leftElev + rightElev) / 2;
+            const leftFace = landmarks[234];
+            const rightFace = landmarks[454];
+            const faceWidth = Math.sqrt(
+                Math.pow(rightFace.x - leftFace.x, 2) +
+                Math.pow(rightFace.y - leftFace.y, 2)
+            );
+            const widthRatio = mouthWidth / (faceWidth + 0.001);
+            const openRatio = mouthHeight / (mouthWidth + 0.001);
+            const elevRatio = cornerElevation / (faceWidth + 0.001);
+            let score = 0;
+            score += Math.max(0, (widthRatio - 0.28)) * 3.0;
+            score += Math.max(0, elevRatio) * 8.0;
+            score += Math.max(0, (openRatio - 0.05)) * 1.5;
+            return Math.min(1.0, Math.max(0.0, score));
+        }
+
+        // ========================================
+        // Smile State Change Handler
+        // ========================================
+        function onSmileStateChanged(smiling) {
+            sendDigiShowSmileState(smiling);
+
+            if (smiling) {
+                startAntennaWiggle();
+                document.getElementById('antennaMode').textContent = '摆动中...';
+                document.getElementById('antennaMode').style.color = '#4ade80';
+            } else {
+                stopAntennaWiggle();
+                document.getElementById('antennaMode').textContent = '等待微笑...';
+                document.getElementById('antennaMode').style.color = '#94a3b8';
+            }
+        }
+
+        // ========================================
+        // Antenna Wiggle (supports both REST and WebRTC)
+        // ========================================
+        function setAntennas(rightDeg, leftDeg) {
+            if (!isRobotConnected) return;
+
+            if (connectionMode === 'rest') {
+                // REST API: antennas in radians
+                restSetTarget([degToRad(rightDeg), degToRad(leftDeg)]);
+            } else if (connectionMode === 'webrtc' && robot) {
+                try { robot.setAntennasDeg(rightDeg, leftDeg); } catch (e) { /* ignore */ }
+            }
+        }
+
+        function startAntennaWiggle() {
+            if (wiggleAnimId) return;
+            wigglePhase = 0;
+            lastWiggleTime = performance.now();
+            wiggleAnimId = requestAnimationFrame(wiggleLoop);
+        }
+
+        function stopAntennaWiggle() {
+            if (wiggleAnimId) {
+                cancelAnimationFrame(wiggleAnimId);
+                wiggleAnimId = null;
+            }
+            setAntennas(0, 0);
+        }
+
+        function wiggleLoop(now) {
+            const dt = (now - lastWiggleTime) / 1000;
+            lastWiggleTime = now;
+            wigglePhase += dt * wiggleSpeed * Math.PI * 2;
+
+            const rightAngle = Math.sin(wigglePhase) * wiggleAmplitude;
+            const leftAngle = Math.sin(wigglePhase + Math.PI) * wiggleAmplitude;
+
+            setAntennas(rightAngle, leftAngle);
+
+            if (isSmiling) {
+                wiggleAnimId = requestAnimationFrame(wiggleLoop);
+            } else {
+                wiggleAnimId = null;
+                setAntennas(0, 0);
+            }
+        }
+
+        // ========================================
+        // DigiShow WebSocket
+        // ========================================
+        window.connectDigiShow = function() {
+            const url = document.getElementById('digiShowUrl').value.trim();
+            if (!url) return;
+            try {
+                digiWs = new WebSocket(url);
+            } catch (e) {
+                document.getElementById('digiStatus').textContent = '连接失败';
+                document.getElementById('digiStatus').style.color = '#f87171';
+                return;
+            }
+            digiWs.onopen = () => {
+                digiConnected = true;
+                document.getElementById('digiStatus').textContent = '已连接';
+                document.getElementById('digiStatus').style.color = '#4ade80';
+                document.getElementById('digiConnectBtn').disabled = true;
+                document.getElementById('digiDisconnectBtn').disabled = false;
+                sendDigiShowSmileState(isSmiling);
+            };
+            digiWs.onclose = () => {
+                digiConnected = false;
+                document.getElementById('digiStatus').textContent = '已断开';
+                document.getElementById('digiStatus').style.color = '#94a3b8';
+                document.getElementById('digiConnectBtn').disabled = false;
+                document.getElementById('digiDisconnectBtn').disabled = true;
+            };
+            digiWs.onerror = (e) => {
+                console.error('DigiShow WS error:', e);
+                document.getElementById('digiStatus').textContent = '连接错误';
+                document.getElementById('digiStatus').style.color = '#f87171';
+            };
+            digiWs.onmessage = (evt) => {
+                const msg = evt.data;
+                const fields = msg.split(',');
+                if (fields[0] === 'dgss' && fields.length === 6) {
+                    console.log('DigiShow 收到:', msg);
+                }
+            };
+        };
+
+        window.disconnectDigiShow = function() {
+            if (digiWs) { digiWs.close(); digiWs = null; }
+        };
+
+        function sendDigiShowSmileState(smiling) {
+            const bValue = smiling ? 1 : 0;
+            const msg = `dgss,1,66,0,0,${bValue}`;
+            if (digiConnected && digiWs && digiWs.readyState === WebSocket.OPEN) {
+                digiWs.send(msg);
+                console.log('DigiShow 发送:', msg);
+            }
+            document.getElementById('digiChannel1').textContent = smiling ? 'ON' : 'OFF';
+            document.getElementById('digiChannel1').style.color = smiling ? '#4ade80' : '#94a3b8';
+        }
+
+        // ========================================
+        // UI helpers
+        // ========================================
+        function updateStatus(state, text) {
+            const indicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            indicator.className = 'status-indicator ' + state;
+            statusText.textContent = text;
+        }
+
+        document.getElementById('thresholdSlider').addEventListener('input', (e) => {
+            smileThreshold = parseFloat(e.target.value);
+            document.getElementById('thresholdValue').textContent = smileThreshold.toFixed(2);
+        });
+        document.getElementById('wiggleAmplitude').addEventListener('input', (e) => {
+            wiggleAmplitude = parseInt(e.target.value);
+            document.getElementById('wiggleAmpValue').textContent = wiggleAmplitude + '°';
+        });
+        document.getElementById('wiggleSpeed').addEventListener('input', (e) => {
+            wiggleSpeed = parseInt(e.target.value);
+            document.getElementById('wiggleSpeedValue').textContent = wiggleSpeed + ' Hz';
+        });
+
+    </script>
+</body>
+</html>
